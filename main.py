@@ -360,7 +360,7 @@ async def recommend(
 
     return {
         "intent": interpreted,
-        "products": recommended + others[:5],
+        "products": recommended + others[:10],
         "extended_products": extended_products,
         "overall_comment": rec_result.get("overall_comment", ""),
         "recommended_count": len(recommended),
