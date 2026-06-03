@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import anthropic
@@ -7,6 +7,7 @@ import os
 import json
 import re
 from dotenv import load_dotenv
+from collections import defaultdict
 
 load_dotenv()
 
@@ -374,6 +375,36 @@ async def search(
 
     return {"results": results[:10]}
 
+
+# フィードバックをメモリに保存（Renderは再起動でリセットされるが無料枠では許容）
+feedback_store = defaultdict(lambda: {"helpful": 0, "not_helpful": 0, "comments": []})
+
+@app.post("/api/feedback")
+async def post_feedback(
+    query: str = Body(...),
+    helpful: bool = Body(...),
+    comment: str = Body(default=""),
+):
+    feedback_store[query[:50]]["helpful" if helpful else "not_helpful"] += 1
+    if comment.strip():
+        feedback_store[query[:50]]["comments"].append(comment[:200])
+    return {"status": "ok"}
+
+@app.get("/api/feedback/stats")
+async def get_feedback_stats():
+    total_helpful = sum(v["helpful"] for v in feedback_store.values())
+    total_not = sum(v["not_helpful"] for v in feedback_store.values())
+    total = total_helpful + total_not
+    rate = round(total_helpful / total * 100) if total > 0 else None
+    return {
+        "total": total,
+        "helpful": total_helpful,
+        "not_helpful": total_not,
+        "helpful_rate": rate,
+        "recent_comments": [
+            c for v in list(feedback_store.values())[-10:] for c in v["comments"]
+        ][-5:],
+    }
 
 @app.get("/api/health")
 async def health():
