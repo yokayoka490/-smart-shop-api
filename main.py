@@ -44,17 +44,26 @@ async def interpret_needs(needs: str) -> dict:
     """ユーザーのニーズを自然言語で受け取り、検索パラメータを抽出する"""
     res = await ai_client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=600,
-        system="あなたはショッピングアドバイザーです。ユーザーのニーズから検索パラメータを抽出します。必ずJSON形式のみで返してください。",
+        max_tokens=700,
+        system="""あなたはECショッピングアドバイザーです。楽天・Yahoo!ショッピングで購入できる「物（商品）」の検索パラメータを抽出します。
+重要：このサービスは物販ECサイトの商品検索のみ対応です。飲食店・サービス・体験・デジタルコンテンツは対象外です。
+必ずJSON形式のみで返してください。""",
         messages=[{
             "role": "user",
-            "content": f"""以下のニーズを分析して検索パラメータをJSONで返してください。
+            "content": f"""以下のニーズを分析してJSONで返してください。
 
 ニーズ：{needs}
 
+ルール：
+- 飲食店・レストラン・サービス業など「物ではないもの」への要望は is_out_of_scope: true にする
+- keywordは商品カテゴリ名を中心に。価格だけのクエリは「プレゼント ギフト」に置き換える
+- keywordに用途・特性を含める（例：「イヤホン」→「ワイヤレスイヤホン ノイズキャンセリング」）
+
 返却形式（JSONのみ）：
 {{
-  "keyword": "検索キーワード（日本語・20文字以内）",
+  "is_out_of_scope": false,
+  "out_of_scope_message": null,
+  "keyword": "検索キーワード（日本語・30文字以内）",
   "minPrice": null または整数,
   "maxPrice": null または整数,
   "freeShipping": false,
@@ -229,6 +238,16 @@ async def recommend(
     final_max = maxPrice if maxPrice is not None else interpreted.get("maxPrice")
     final_free = freeShipping or interpreted.get("freeShipping", False)
     final_genre = genreId if genreId else interpreted.get("genreId", "")
+
+    # サービス対象外チェック
+    if interpreted.get("is_out_of_scope"):
+        return {
+            "intent": interpreted,
+            "products": [],
+            "overall_comment": interpreted.get("out_of_scope_message") or "このサービスは楽天・Yahoo!ショッピングの商品検索に特化しています。飲食店・サービス業などは対象外です。購入できる商品について教えてください。",
+            "recommended_count": 0,
+            "is_out_of_scope": True,
+        }
 
     keyword = interpreted.get("keyword", needs[:20])
 
