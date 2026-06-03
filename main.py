@@ -169,7 +169,7 @@ async def search_rakuten_raw(keyword: str, min_price, max_price, free_shipping: 
 async def recommend_products(needs: str, key_requirements: list, products: list) -> dict:
     """検索結果からユーザーのニーズに最も合う商品を推薦する"""
     if not products:
-        return {"recommendations": [], "overall_comment": "条件に合う商品が見つかりませんでした。"}
+        return {"recommendations": [], "overall_comment": "条件に合う商品が見つかりませんでした。", "conditions_unmet": True}
 
     lines = []
     for i, p in enumerate(products[:15]):
@@ -179,29 +179,39 @@ async def recommend_products(needs: str, key_requirements: list, products: list)
             f"★{p.get('reviewAverage', 0):.1f}({p.get('reviewCount', 0)}件)"
         )
     products_text = "\n".join(lines)
-
     req_text = "・".join(key_requirements) if key_requirements else "なし"
 
     res = await ai_client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=800,
-        system="あなたは親身なショッピングアドバイザーです。ユーザーのニーズに本当に合う商品を選びます。JSONのみ返してください。",
+        max_tokens=1000,
+        system="あなたは誠実なショッピングアドバイザーです。条件を満たさない商品は正直に報告します。JSONのみ返してください。",
         messages=[{
             "role": "user",
-            "content": f"""ユーザーのニーズに最も合う商品を最大3つ選んでください。
+            "content": f"""ユーザーのニーズに最も合う商品を選んでください。
 
 ニーズ：{needs}
-重要な条件：{req_text}
+重要な条件（必ず確認）：{req_text}
+
+重要なルール：
+- 条件が商品名や説明から確認できない場合は正直に報告する
+- 全ての重要条件を満たす商品がなければ conditions_unmet: true にする
+- conditions_unmetがtrueの場合、どの条件が不足しているか、どの条件を緩めれば見つかるかを説明する
 
 候補：
 {products_text}
 
 返却形式（JSONのみ）：
 {{
+  "conditions_unmet": false,
+  "unmet_conditions": [],
+  "relax_suggestion": null,
+  "priority_options": [],
   "recommendations": [
     {{
       "rank": 1,
       "product_index": 番号（1始まり）,
+      "matched_conditions": ["満たしている条件"],
+      "unmatched_conditions": ["確認できない条件"],
       "reason": "このニーズに合う理由（60文字以内）",
       "highlight": "特に注目すべき点（25文字以内）",
       "caution": "気になる点があれば（25文字以内、なければnull）"
