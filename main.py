@@ -292,19 +292,55 @@ async def recommend(
             "overall_comment": "条件に合う商品が見つかりませんでした。条件を変えてお試しください。"
         }
 
-    # Step 3: AIが推薦を生成
+    has_price_limit = final_min is not None or final_max is not None
+
+    # Step 3: AIが予算内の商品を推薦
     rec_result = await recommend_products(
         needs=needs,
         key_requirements=interpreted.get("key_requirements", []),
         products=products,
     )
 
-    # Step 4: 推薦商品を先頭に並べる
+    # Step 4: 条件が満たされていない＆予算制限がある場合 → 予算なしで再検索
+    extended_products = []
+    if rec_result.get("conditions_unmet") and has_price_limit:
+        rakuten_ext, yahoo_ext = await asyncio.gather(
+            search_rakuten_raw(keyword=keyword, min_price=None, max_price=None,
+                               free_shipping=False, genre_id=final_genre),
+            search_yahoo_raw(keyword=keyword, min_price=None, max_price=None,
+                             free_shipping=False),
+        )
+        ext_all = [p for pair in zip(rakuten_ext, yahoo_ext) for p in pair]
+        ext_all += rakuten_ext[len(yahoo_ext):] + yahoo_ext[len(rakuten_ext):]
+
+        # 予算内の商品と重複しないものだけ
+        existing_ids = {p["id"] for p in products}
+        ext_candidates = [p for p in ext_all if p["id"] not in existing_ids]
+
+        if ext_candidates:
+            ext_rec = await recommend_products(
+                needs=needs,
+                key_requirements=interpreted.get("key_requirements", []),
+                products=ext_candidates,
+            )
+            ext_indices = [r["product_index"] - 1 for r in ext_rec.get("recommendations", [])]
+            for rec in ext_rec.get("recommendations", []):
+                idx = rec["product_index"] - 1
+                if idx < len(ext_candidates):
+                    ext_candidates[idx]["aiReason"] = rec.get("reason", "")
+                    ext_candidates[idx]["aiHighlight"] = rec.get("highlight", "")
+                    ext_candidates[idx]["aiCaution"] = rec.get("caution")
+                    ext_candidates[idx]["isRecommended"] = True
+                    ext_candidates[idx]["isExtended"] = True
+                    ext_candidates[idx]["matchedConditions"] = rec.get("matched_conditions", [])
+                    ext_candidates[idx]["unmatchedConditions"] = rec.get("unmatched_conditions", [])
+            extended_products = [ext_candidates[i] for i in ext_indices if i < len(ext_candidates)]
+
+    # Step 5: 予算内の商品に推薦情報をくっつける
     rec_indices = [r["product_index"] - 1 for r in rec_result.get("recommendations", [])]
     recommended = [products[i] for i in rec_indices if i < len(products)]
     others = [p for i, p in enumerate(products) if i not in rec_indices]
 
-    # 推薦理由をくっつける
     for rec in rec_result.get("recommendations", []):
         idx = rec["product_index"] - 1
         if idx < len(products):
@@ -312,12 +348,28 @@ async def recommend(
             products[idx]["aiHighlight"] = rec.get("highlight", "")
             products[idx]["aiCaution"] = rec.get("caution")
             products[idx]["isRecommended"] = True
+            products[idx]["matchedConditions"] = rec.get("matched_conditions", [])
+            products[idx]["unmatchedConditions"] = rec.get("unmatched_conditions", [])
+
+    # 予算上限を文字列で返す
+    budget_label = None
+    if final_max:
+        budget_label = f"¥{final_max:,}以内"
+    elif final_min:
+        budget_label = f"¥{final_min:,}以上"
 
     return {
         "intent": interpreted,
-        "products": recommended + others[:7],
+        "products": recommended + others[:5],
+        "extended_products": extended_products,
         "overall_comment": rec_result.get("overall_comment", ""),
         "recommended_count": len(recommended),
+        "conditions_unmet": rec_result.get("conditions_unmet", False),
+        "unmet_conditions": rec_result.get("unmet_conditions", []),
+        "relax_suggestion": rec_result.get("relax_suggestion"),
+        "priority_options": rec_result.get("priority_options", []),
+        "has_price_limit": has_price_limit,
+        "budget_label": budget_label,
     }
 
 
