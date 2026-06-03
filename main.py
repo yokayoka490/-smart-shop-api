@@ -31,12 +31,39 @@ RAKUTEN_HEADERS = {"Origin": SITE_URL, "Referer": SITE_URL}
 ai_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def calc_effective_price(base_price: int, shipping: int, point_rate: int) -> dict:
-    points = int(base_price * point_rate / 100)
+RAKUTEN_CARD_BONUS = {
+    "none": 0,
+    "normal": 2,    # 楽天カード
+    "gold": 3,      # 楽天ゴールドカード
+    "premium": 5,   # 楽天プレミアムカード
+}
+
+SPU_BONUS = {
+    "mobile": 4,        # 楽天モバイル契約
+    "bank_card": 1,     # 楽天銀行+楽天カード
+    "pay": 0.5,         # 楽天Pay
+    "securities": 1,    # 楽天証券積立
+    "fashion": 0.5,     # 楽天ファッション
+    "beauty": 0.5,      # 楽天ビューティー
+}
+
+def calc_effective_price(
+    base_price: int,
+    shipping: int,
+    point_rate: int,
+    rakuten_card: str = "none",
+    spu_items: list = [],
+) -> dict:
+    # 基本ポイント率 + カードボーナス + SPUボーナス
+    card_bonus = RAKUTEN_CARD_BONUS.get(rakuten_card, 0)
+    spu_bonus = sum(SPU_BONUS.get(item, 0) for item in spu_items)
+    total_rate = max(point_rate, 1) + card_bonus + spu_bonus
+    points = int(base_price * total_rate / 100)
     return {
         "basePrice": base_price,
         "shippingCost": shipping,
         "pointReduction": points,
+        "pointRate": total_rate,
         "effectivePrice": base_price + shipping - points,
     }
 
@@ -127,7 +154,7 @@ async def search_yahoo_raw(keyword: str, min_price, max_price, free_shipping: bo
     return results
 
 
-async def search_rakuten_raw(keyword: str, min_price, max_price, free_shipping: bool, genre_id: str = "") -> list:
+async def search_rakuten_raw(keyword: str, min_price, max_price, free_shipping: bool, genre_id: str = "", rakuten_card: str = "none", spu_items: list = []) -> list:
     params = {
         "applicationId": RAKUTEN_APP_ID,
         "accessKey": RAKUTEN_ACCESS_KEY,
@@ -151,7 +178,7 @@ async def search_rakuten_raw(keyword: str, min_price, max_price, free_shipping: 
         i = item["Item"]
         base = i["itemPrice"]
         shipping = 0 if i.get("postageFlag") == 1 else 650
-        calc = calc_effective_price(base, shipping, i.get("pointRate", 1))
+        calc = calc_effective_price(base, shipping, i.get("pointRate", 1), rakuten_card, spu_items)
         results.append({
             "id": i["itemCode"],
             "name": i["itemName"][:60] + "..." if len(i["itemName"]) > 60 else i["itemName"],
@@ -239,6 +266,8 @@ async def recommend(
     freeShipping: bool = Query(default=False),
     genreId: str | None = Query(default=None),
     sort: str = Query(default="standard"),
+    rakutenCard: str = Query(default="none"),
+    spuItems: str = Query(default=""),
 ):
     """自然言語のニーズ＋絞り込み条件から最適商品を推薦するメインエンドポイント"""
     # Step 1: ニーズを解析
@@ -262,10 +291,13 @@ async def recommend(
 
     keyword = interpreted.get("keyword", needs[:20])
 
+    spu_list = [s for s in spuItems.split(",") if s] if spuItems else []
+
     # Step 2: 楽天・Yahoo!を並列検索
     rakuten_results, yahoo_results = await asyncio.gather(
         search_rakuten_raw(keyword=keyword, min_price=final_min, max_price=final_max,
-                           free_shipping=final_free, genre_id=final_genre),
+                           free_shipping=final_free, genre_id=final_genre,
+                           rakuten_card=rakutenCard, spu_items=spu_list),
         search_yahoo_raw(keyword=keyword, min_price=final_min, max_price=final_max,
                          free_shipping=final_free),
     )
